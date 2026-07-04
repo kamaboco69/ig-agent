@@ -18,6 +18,8 @@ export async function GET() {
       overlaySub: true,
       status: true,
       source: true,
+      mediaType: true,
+      sourceKind: true,
       scheduledAt: true,
       postedAt: true,
       errorMessage: true,

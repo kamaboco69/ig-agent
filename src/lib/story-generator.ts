@@ -84,6 +84,72 @@ export async function planStory(input: PlanInput): Promise<StoryPlan> {
   };
 }
 
+export interface MediaCopyPlan {
+  concept: string;
+  overlayTitle: string;
+  overlaySub: string | null;
+}
+
+// 手持ち素材（写真）に載せるコピーを立案する（画像プロンプトは作らない）。
+// caption: 素材の元キャプション（過去IG投稿の再利用時）/ fileName: ドライブのファイル名。
+export async function planCopyForMedia(input: {
+  username: string;
+  theme?: string | null;
+  instruction?: string | null;
+  caption?: string | null;
+  fileName?: string | null;
+  recentTitles?: string[];
+}): Promise<MediaCopyPlan> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY が未設定です");
+
+  const parts: string[] = [];
+  parts.push(`Instagramアカウント: @${input.username}`);
+  if (input.theme?.trim()) parts.push(`アカウントのテーマ・方向性: ${input.theme.trim()}`);
+  if (input.instruction?.trim()) parts.push(`今回の指示: ${input.instruction.trim()}`);
+  if (input.caption?.trim()) parts.push(`素材写真の元キャプション: ${input.caption.trim().slice(0, 500)}`);
+  if (input.fileName?.trim()) parts.push(`素材写真のファイル名: ${input.fileName.trim()}`);
+  if (input.recentTitles?.length) {
+    parts.push(`直近のストーリーズのコピー（重複・マンネリを避ける）:\n- ${input.recentTitles.join("\n- ")}`);
+  }
+
+  const client = new Anthropic({ apiKey });
+  const msg = await client.messages.create({
+    model: PLAN_MODEL,
+    max_tokens: 500,
+    messages: [
+      {
+        role: "user",
+        content:
+          `あなたはInstagramストーリーズの運用プランナーです。手持ちの写真素材の上に載せるコピーを考えてください。` +
+          `写真が主役なので、コピーは短く・写真の邪魔をしないこと。\n\n` +
+          parts.join("\n") +
+          `\n\n以下のJSONだけを出力してください（前置き・コードブロック不要）:\n` +
+          `{\n` +
+          `  "concept": "このストーリーズの狙い（日本語1文）",\n` +
+          `  "title": "メインコピー（日本語、6〜14文字）",\n` +
+          `  "sub": "サブコピー（日本語、12〜24文字。不要なら null）"\n` +
+          `}`,
+      },
+    ],
+  });
+
+  const text = msg.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("")
+    .trim();
+  const parsed = extractJson(text);
+  const title = String(parsed.title ?? "").trim();
+  if (!title) throw new Error("コピーの生成に失敗しました");
+
+  return {
+    concept: String(parsed.concept ?? "").trim(),
+    overlayTitle: title.slice(0, 30),
+    overlaySub: parsed.sub ? String(parsed.sub).trim().slice(0, 50) : null,
+  };
+}
+
 function extractJson(text: string): Record<string, unknown> {
   // コードブロックや前置きが混ざっても最初の { ... } を拾う
   const start = text.indexOf("{");

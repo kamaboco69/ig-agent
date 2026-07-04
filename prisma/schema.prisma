@@ -26,6 +26,25 @@ model Organization {
   users      User[]
   igAccounts IgAccount[]
   stories    Story[]
+  driveIntegration DriveIntegration?
+}
+
+// メディアライブラリ用の Google ドライブ連携（組織ごとに1件）。
+// 指定フォルダ内の画像/動画をストーリーズ素材として使う。トークンは暗号化保存。
+model DriveIntegration {
+  id             String    @id @default(cuid())
+  organizationId String    @unique
+  googleEmail    String?
+  folderId       String? // 素材フォルダのID（URL貼り付けから抽出）
+  folderName     String?
+  accessToken    String // 暗号化
+  refreshToken   String? // 暗号化（offline access）
+  tokenExpiresAt DateTime?
+  status         String    @default("connected") // connected / expired / revoked
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 }
 
 model User {
@@ -109,6 +128,7 @@ model IgAccount {
   autoStoryTimes   String? // 自動投稿時刻（JST, "08:00,20:00" 形式）
   autoStoryTheme   String? // 自動生成のテーマ・方向性（自由記述。生成プロンプトに注入）
   autoStoryStyle   String    @default("auto") // 画像スタイル（story-generator の IMAGE_STYLES キー）
+  autoStorySource  String    @default("ai") // ai（全AI生成）/ library（ドライブ素材から）/ mix（交互）
   lastAutoStoryAt  DateTime? // 最後に自動生成した日時（同一スロットの二重実行防止）
 
   createdAt DateTime @default(now())
@@ -132,7 +152,12 @@ model Story {
   overlayTitle   String? // 画像に焼き込んだメインコピー
   overlaySub     String? // 画像に焼き込んだサブコピー
   imagePrompt    String? // 背景画像の生成プロンプト（英語）
-  imageData      String // data:image/jpeg;base64,...（1080x1920）
+  imageData      String // 画像: 投稿画像そのもの / 動画: サムネイル（data URL）
+  mediaType      String    @default("image") // image / video
+  sourceKind     String    @default("ai") // ai（全AI生成）/ upload / library（ドライブ）/ ig（過去投稿）
+  sourceRef      String? // 素材の参照（drive:<fileId> / ig:<mediaId>）。重複利用の回避に使う
+  videoSrc       String? // 動画の取得元URL（https直リンク）または "drive:<fileId>"（プロキシ配信）
+  videoToken     String? // 動画プロキシ(/api/story-video)のアクセストークン
   status         String    @default("draft") // draft / scheduled / posting / posted / failed
   source         String    @default("manual") // manual（画面から生成）/ auto（オートパイロット）
   scheduledAt    DateTime?

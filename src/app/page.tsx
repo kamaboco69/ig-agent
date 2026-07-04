@@ -1,14 +1,14 @@
 import { prisma } from "@/lib/db";
 import { requireOrgPage } from "@/lib/auth-helpers";
 import { igConfigured } from "@/lib/ig-api";
-import { DashboardClient, type AccountView, type StoryView } from "./DashboardClient";
+import { DashboardClient, type AccountView, type StoryView, type DriveView } from "./DashboardClient";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   const { organizationId } = await requireOrgPage();
 
-  const [accounts, stories] = await Promise.all([
+  const [accounts, stories, driveIntegration] = await Promise.all([
     prisma.igAccount.findMany({
       where: { organizationId },
       orderBy: { createdAt: "asc" },
@@ -24,6 +24,7 @@ export default async function HomePage() {
         autoStoryTimes: true,
         autoStoryTheme: true,
         autoStoryStyle: true,
+        autoStorySource: true,
       },
     }),
     prisma.story.findMany({
@@ -38,12 +39,18 @@ export default async function HomePage() {
         overlaySub: true,
         status: true,
         source: true,
+        mediaType: true,
+        sourceKind: true,
         scheduledAt: true,
         postedAt: true,
         errorMessage: true,
         createdAt: true,
         igAccount: { select: { username: true } },
       },
+    }),
+    prisma.driveIntegration.findUnique({
+      where: { organizationId },
+      select: { googleEmail: true, folderId: true, folderName: true, status: true },
     }),
   ]);
 
@@ -60,18 +67,27 @@ export default async function HomePage() {
     overlaySub: s.overlaySub,
     status: s.status,
     source: s.source,
+    mediaType: s.mediaType,
+    sourceKind: s.sourceKind,
     scheduledAt: s.scheduledAt?.toISOString() ?? null,
     postedAt: s.postedAt?.toISOString() ?? null,
     errorMessage: s.errorMessage,
     createdAt: s.createdAt.toISOString(),
     imageUrl: `/api/story-image/${s.id}`,
   }));
+  const driveView: DriveView = {
+    connected: !!driveIntegration && driveIntegration.status === "connected",
+    googleEmail: driveIntegration?.googleEmail ?? null,
+    folderId: driveIntegration?.folderId ?? null,
+    folderName: driveIntegration?.folderName ?? null,
+  };
 
   return (
     <DashboardClient
       configured={igConfigured()}
       initialAccounts={accountViews}
       initialStories={storyViews}
+      drive={driveView}
     />
   );
 }

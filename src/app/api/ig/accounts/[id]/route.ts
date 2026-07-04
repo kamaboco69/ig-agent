@@ -20,6 +20,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     autoStoryTimes?: string;
     autoStoryTheme?: string;
     autoStoryStyle?: string;
+    autoStorySource?: string;
   };
 
   const data: Record<string, unknown> = {};
@@ -27,6 +28,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (typeof body.autoStoryTheme === "string") data.autoStoryTheme = body.autoStoryTheme.trim() || null;
   if (typeof body.autoStoryStyle === "string" && IMAGE_STYLES[body.autoStoryStyle]) {
     data.autoStoryStyle = body.autoStoryStyle;
+  }
+  if (typeof body.autoStorySource === "string" && ["ai", "library", "mix"].includes(body.autoStorySource)) {
+    data.autoStorySource = body.autoStorySource;
   }
   if (typeof body.autoStoryTimes === "string") {
     // "08:00, 20:00" → 正規化。妥当な HH:mm 以外は弾く
@@ -47,6 +51,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       autoStoryTimes: updated.autoStoryTimes,
       autoStoryTheme: updated.autoStoryTheme,
       autoStoryStyle: updated.autoStoryStyle,
+      autoStorySource: updated.autoStorySource,
     },
   });
 }

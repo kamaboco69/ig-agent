@@ -128,13 +128,21 @@ export async function getMe(token: string): Promise<IgMe> {
 
 // ── ストーリーズ投稿（2段階: コンテナ作成 → 公開） ──
 
-// 1) ストーリーズ用メディアコンテナを作成。imageUrl は公開アクセス可能な JPEG のURL必須。
+export interface StoryMediaSource {
+  imageUrl?: string; // 公開アクセス可能な JPEG のURL
+  videoUrl?: string; // 公開アクセス可能な MP4/MOV のURL（3〜60秒）
+}
+
+// 1) ストーリーズ用メディアコンテナを作成。
 export async function createStoryContainer(
   token: string,
   igUserId: string,
-  imageUrl: string
+  media: StoryMediaSource
 ): Promise<string> {
-  const params = new URLSearchParams({ media_type: "STORIES", image_url: imageUrl });
+  const params = new URLSearchParams({ media_type: "STORIES" });
+  if (media.videoUrl) params.set("video_url", media.videoUrl);
+  else if (media.imageUrl) params.set("image_url", media.imageUrl);
+  else throw new Error("imageUrl または videoUrl が必要です");
   const json = await igFetch<{ id: string }>(token, `/${igUserId}/media?${params.toString()}`, {
     method: "POST",
   });
@@ -169,15 +177,16 @@ export async function publishContainer(
 }
 
 // コンテナ作成 → FINISHED まで待機 → 公開、をまとめて行う。IG メディアIDを返す。
+// 動画はサーバー側の変換処理が入るため待機を長めに取る。
 export async function publishStory(
   token: string,
   igUserId: string,
-  imageUrl: string
+  media: StoryMediaSource
 ): Promise<string> {
-  const containerId = await createStoryContainer(token, igUserId, imageUrl);
+  const containerId = await createStoryContainer(token, igUserId, media);
 
-  // 取り込み完了をポーリング（最大 ~60秒）
-  const deadline = Date.now() + 60_000;
+  const waitMs = media.videoUrl ? 240_000 : 60_000;
+  const deadline = Date.now() + waitMs;
   for (;;) {
     const { statusCode, status } = await getContainerStatus(token, containerId);
     if (statusCode === "FINISHED") break;
@@ -185,10 +194,45 @@ export async function publishStory(
       throw new Error(`メディアの取り込みに失敗しました: ${status ?? statusCode}`);
     }
     if (Date.now() > deadline) {
-      throw new Error("メディアの取り込みがタイムアウトしました（60秒）");
+      throw new Error(`メディアの取り込みがタイムアウトしました（${Math.round(waitMs / 1000)}秒）`);
     }
-    await new Promise((r) => setTimeout(r, 2_500));
+    await new Promise((r) => setTimeout(r, media.videoUrl ? 5_000 : 2_500));
   }
 
   return publishContainer(token, igUserId, containerId);
+}
+
+// ── 過去投稿の取得（メディアライブラリ「過去のIG投稿から再利用」用） ──
+
+export interface IgMediaItem {
+  id: string;
+  mediaType: string; // IMAGE / VIDEO / CAROUSEL_ALBUM
+  mediaUrl?: string; // CDN直リンク（署名付き・一定期間有効）
+  thumbnailUrl?: string; // 動画のサムネイル
+  caption?: string;
+  timestamp?: string;
+  permalink?: string;
+}
+
+// 連携アカウントの過去投稿一覧（新しい順・最大 limit 件）
+export async function getUserMedia(token: string, igUserId: string, limit = 40): Promise<IgMediaItem[]> {
+  const params = new URLSearchParams({
+    fields: "id,media_type,media_url,thumbnail_url,caption,timestamp,permalink",
+    limit: String(Math.min(Math.max(limit, 1), 100)),
+  });
+  const json = await igFetch<{
+    data?: Array<{
+      id: string; media_type: string; media_url?: string; thumbnail_url?: string;
+      caption?: string; timestamp?: string; permalink?: string;
+    }>;
+  }>(token, `/${igUserId}/media?${params.toString()}`);
+  return (json.data ?? []).map((m) => ({
+    id: m.id,
+    mediaType: m.media_type,
+    mediaUrl: m.media_url,
+    thumbnailUrl: m.thumbnail_url,
+    caption: m.caption,
+    timestamp: m.timestamp,
+    permalink: m.permalink,
+  }));
 }

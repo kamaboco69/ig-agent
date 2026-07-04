@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { signOut } from "next-auth/react";
 import {
   CalendarClock,
   Camera,
   Check,
+  Film,
+  FolderOpen,
+  HardDriveUpload,
+  History,
   Loader2,
   LogOut,
   Plus,
@@ -30,6 +34,7 @@ export interface AccountView {
   autoStoryTimes: string | null;
   autoStoryTheme: string | null;
   autoStoryStyle: string;
+  autoStorySource: string;
 }
 
 export interface StoryView {
@@ -41,11 +46,37 @@ export interface StoryView {
   overlaySub: string | null;
   status: string;
   source: string;
+  mediaType: string;
+  sourceKind: string;
   scheduledAt: string | null;
   postedAt: string | null;
   errorMessage: string | null;
   createdAt: string;
   imageUrl: string;
+}
+
+export interface DriveView {
+  connected: boolean;
+  googleEmail: string | null;
+  folderId: string | null;
+  folderName: string | null;
+}
+
+interface DriveFileView {
+  id: string;
+  name: string;
+  mimeType: string;
+  thumbnailLink?: string;
+  durationMillis?: number;
+}
+
+interface IgMediaView {
+  id: string;
+  mediaType: string;
+  mediaUrl?: string;
+  thumbnailUrl?: string;
+  caption?: string;
+  timestamp?: string;
 }
 
 const STYLE_OPTIONS = [
@@ -54,6 +85,12 @@ const STYLE_OPTIONS = [
   { value: "illustration", label: "イラスト" },
   { value: "minimal", label: "ミニマル" },
   { value: "pop", label: "ポップ" },
+];
+
+const AUTO_SOURCE_OPTIONS = [
+  { value: "ai", label: "AI生成のみ" },
+  { value: "library", label: "ドライブ素材から" },
+  { value: "mix", label: "AIと素材を交互に" },
 ];
 
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
@@ -69,29 +106,70 @@ const ERROR_MESSAGES: Record<string, string> = {
   ig_denied: "Instagram連携がキャンセルされました",
   ig_invalid_state: "連携セッションが無効です。もう一度お試しください",
   ig_token_failed: "Instagram連携に失敗しました",
+  gdrive_not_configured: "Googleドライブ連携が未設定です",
+  gdrive_denied: "Googleドライブ連携がキャンセルされました",
+  gdrive_invalid_state: "連携セッションが無効です。もう一度お試しください",
+  gdrive_token_failed: "Googleドライブ連携に失敗しました",
 };
 
 export function DashboardClient({
   configured,
   initialAccounts,
   initialStories,
+  drive,
 }: {
   configured: boolean;
   initialAccounts: AccountView[];
   initialStories: StoryView[];
+  drive: DriveView;
 }) {
   const router = useRouter();
   const params = useSearchParams();
 
   const [accounts] = useState(initialAccounts);
   const [stories, setStories] = useState(initialStories);
-  const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
-  // 生成フォーム
+  // 連携コールバックのフィードバック（マウント時のURLパラメータから初期状態を決める）
+  const paramError = params?.get("error") ?? null;
+  const paramConnected = params?.get("connected") ?? null;
+  const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string } | null>(() => {
+    if (paramError) {
+      const detail = params?.get("detail");
+      return { kind: "error", text: `${ERROR_MESSAGES[paramError] ?? paramError}${detail ? `: ${detail}` : ""}` };
+    }
+    if (paramConnected === "ig") return { kind: "ok", text: "Instagramアカウントを連携しました" };
+    if (paramConnected === "gdrive") {
+      return { kind: "ok", text: "Googleドライブを連携しました。素材フォルダを設定してください" };
+    }
+    return null;
+  });
+
+  // 作成フォーム共通
   const [accountId, setAccountId] = useState(initialAccounts[0]?.id ?? "");
   const [instruction, setInstruction] = useState("");
-  const [style, setStyle] = useState(initialAccounts[0]?.autoStoryStyle ?? "auto");
   const [generating, setGenerating] = useState(false);
+  const [createMode, setCreateMode] = useState<"ai" | "media">(paramConnected === "gdrive" ? "media" : "ai");
+
+  // AIおまかせ
+  const [style, setStyle] = useState(initialAccounts[0]?.autoStoryStyle ?? "auto");
+
+  // 素材から作成
+  const [mediaTab, setMediaTab] = useState<"upload" | "drive" | "ig">(
+    paramConnected === "gdrive" ? "drive" : "upload"
+  );
+  const [overlay, setOverlay] = useState(true);
+  const [upload, setUpload] = useState<{ dataUrl: string; fileName: string } | null>(null);
+  const [driveFiles, setDriveFiles] = useState<DriveFileView[] | null>(null);
+  const [driveFolder, setDriveFolder] = useState<{ id: string; name: string } | null>(
+    drive.folderId ? { id: drive.folderId, name: drive.folderName ?? "" } : null
+  );
+  const [driveLoading, setDriveLoading] = useState(false);
+  const [folderUrl, setFolderUrl] = useState("");
+  const [editFolder, setEditFolder] = useState(false);
+  const [selectedDrive, setSelectedDrive] = useState<DriveFileView | null>(null);
+  const [igItems, setIgItems] = useState<IgMediaView[] | null>(null);
+  const [igLoading, setIgLoading] = useState(false);
+  const [selectedIg, setSelectedIg] = useState<IgMediaView | null>(null);
 
   // 選択中ストーリーズ（詳細パネル）
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -103,17 +181,15 @@ export function DashboardClient({
     [stories, selectedId]
   );
 
-  // 連携コールバックのフィードバック
+  const selectedIsVideo =
+    (mediaTab === "drive" && selectedDrive?.mimeType.startsWith("video/")) ||
+    (mediaTab === "ig" && selectedIg?.mediaType === "VIDEO");
+
   useEffect(() => {
-    const err = params?.get("error");
-    const connected = params?.get("connected");
-    if (err) {
-      const detail = params?.get("detail");
-      showToast("error", `${ERROR_MESSAGES[err] ?? err}${detail ? `: ${detail}` : ""}`);
-    } else if (connected === "ig") {
-      showToast("ok", "Instagramアカウントを連携しました");
-    }
-    if (err || connected) router.replace("/");
+    if (!paramError && !paramConnected) return;
+    router.replace("/");
+    const timer = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -125,18 +201,90 @@ export function DashboardClient({
   async function refreshStories() {
     const res = await fetch("/api/stories");
     if (res.ok) {
-      const json = (await res.json()) as { stories: (Omit<StoryView, "username" | "imageUrl"> & { igAccount: { username: string }; imageUrl: string })[] };
-      setStories(
-        json.stories.map((s) => ({ ...s, username: s.igAccount.username }))
-      );
+      const json = (await res.json()) as { stories: (Omit<StoryView, "username"> & { igAccount: { username: string } })[] };
+      setStories(json.stories.map((s) => ({ ...s, username: s.igAccount.username })));
     }
   }
 
-  async function generate() {
-    if (!accountId) {
-      showToast("error", "Instagramアカウントを先に連携してください");
+  const loadDriveFiles = useCallback(async () => {
+    setDriveLoading(true);
+    try {
+      const res = await fetch("/api/gdrive/files");
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "一覧の取得に失敗しました");
+      setDriveFolder(json.folder ?? null);
+      setDriveFiles(json.files ?? []);
+    } catch (e) {
+      showToast("error", e instanceof Error ? e.message : "ドライブの読み込みに失敗しました");
+      setDriveFiles([]);
+    } finally {
+      setDriveLoading(false);
+    }
+  }, []);
+
+  const loadIgMedia = useCallback(async (forAccountId: string) => {
+    setIgLoading(true);
+    try {
+      const res = await fetch(`/api/ig/media?accountId=${encodeURIComponent(forAccountId)}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "過去投稿の取得に失敗しました");
+      setIgItems(json.items ?? []);
+    } catch (e) {
+      showToast("error", e instanceof Error ? e.message : "過去投稿の取得に失敗しました");
+      setIgItems([]);
+    } finally {
+      setIgLoading(false);
+    }
+  }, []);
+
+  // 素材タブを開いたときの遅延読み込み（クリック起点。effect内のsetStateを避ける）
+  function openMediaTab(tab: "upload" | "drive" | "ig") {
+    setMediaTab(tab);
+    if (tab === "drive" && drive.connected && driveFolder && driveFiles === null) void loadDriveFiles();
+    if (tab === "ig" && igItems === null) void loadIgMedia(accountId);
+  }
+
+  function onFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      showToast("error", "画像ファイルを選択してください（動画はドライブ/過去投稿から使えます）");
       return;
     }
+    if (file.size > 15 * 1024 * 1024) {
+      showToast("error", "画像は15MB以下にしてください");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setUpload({ dataUrl: String(reader.result), fileName: file.name });
+    reader.readAsDataURL(file);
+  }
+
+  async function saveFolder() {
+    if (!folderUrl.trim()) return;
+    setDriveLoading(true);
+    try {
+      const res = await fetch("/api/gdrive/folder", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderUrl }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "フォルダの設定に失敗しました");
+      setDriveFolder(json.folder);
+      setEditFolder(false);
+      setFolderUrl("");
+      setDriveFiles(null);
+      await loadDriveFiles();
+      showToast("ok", `素材フォルダを「${json.folder.name}」に設定しました`);
+    } catch (e) {
+      showToast("error", e instanceof Error ? e.message : "フォルダの設定に失敗しました");
+      setDriveLoading(false);
+    }
+  }
+
+  async function generateAi() {
+    if (!accountId) return showToast("error", "Instagramアカウントを先に連携してください");
     setGenerating(true);
     try {
       const res = await fetch("/api/stories/generate", {
@@ -157,9 +305,59 @@ export function DashboardClient({
     }
   }
 
+  async function createFromMedia() {
+    if (!accountId) return showToast("error", "Instagramアカウントを先に連携してください");
+
+    let body: Record<string, unknown>;
+    if (mediaTab === "upload") {
+      if (!upload) return showToast("error", "画像を選択してください");
+      body = { source: "upload", dataUrl: upload.dataUrl, fileName: upload.fileName };
+    } else if (mediaTab === "drive") {
+      if (!selectedDrive) return showToast("error", "ファイルを選択してください");
+      body = {
+        source: "library",
+        fileId: selectedDrive.id,
+        mimeType: selectedDrive.mimeType,
+        fileName: selectedDrive.name,
+      };
+    } else {
+      if (!selectedIg) return showToast("error", "投稿を選択してください");
+      body = {
+        source: "ig",
+        igMediaId: selectedIg.id,
+        mediaUrl: selectedIg.mediaUrl,
+        mediaTypeHint: selectedIg.mediaType,
+        caption: selectedIg.caption,
+      };
+    }
+
+    setGenerating(true);
+    try {
+      const res = await fetch("/api/stories/from-media", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, igAccountId: accountId, overlay: overlay && !selectedIsVideo, instruction }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "作成に失敗しました");
+      setInstruction("");
+      setUpload(null);
+      setSelectedDrive(null);
+      setSelectedIg(null);
+      await refreshStories();
+      setSelectedId(json.story.id);
+      showToast("ok", json.story.mediaType === "video"
+        ? "動画ストーリーズを準備しました。プレビューはサムネイル表示です"
+        : "ストーリーズを作成しました。プレビューを確認して投稿してください");
+    } catch (e) {
+      showToast("error", e instanceof Error ? e.message : "作成に失敗しました");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   async function publishNow(id: string) {
     setBusy(true);
-    // 楽観的に「投稿中」表示
     setStories((prev) => prev.map((s) => (s.id === id ? { ...s, status: "posting" } : s)));
     try {
       const res = await fetch(`/api/stories/${id}/publish`, { method: "POST" });
@@ -175,10 +373,7 @@ export function DashboardClient({
   }
 
   async function schedule(id: string) {
-    if (!scheduleAt) {
-      showToast("error", "予約日時を選択してください");
-      return;
-    }
+    if (!scheduleAt) return showToast("error", "予約日時を選択してください");
     setBusy(true);
     try {
       const res = await fetch(`/api/stories/${id}`, {
@@ -229,6 +424,12 @@ export function DashboardClient({
     }
   }
 
+  const fmtDuration = (ms?: number) => {
+    if (!ms) return "";
+    const s = Math.round(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+
   return (
     <div className="min-h-screen max-w-6xl mx-auto px-4 py-6">
       {/* ヘッダー */}
@@ -250,7 +451,6 @@ export function DashboardClient({
         </button>
       </header>
 
-      {/* トースト */}
       {toast && (
         <div
           className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg text-sm font-medium shadow-lg ${
@@ -289,13 +489,10 @@ export function DashboardClient({
         ) : (
           <div className="space-y-3">
             {accounts.map((a) => (
-              <AccountCard key={a.id} account={a} onChanged={() => router.refresh()} onToast={showToast} />
+              <AccountCard key={a.id} account={a} driveConnected={drive.connected && !!driveFolder} onChanged={() => router.refresh()} onToast={showToast} />
             ))}
             {configured && (
-              <a
-                href="/api/ig/connect"
-                className="inline-flex items-center gap-1.5 text-pink-400 hover:text-pink-300 text-sm"
-              >
+              <a href="/api/ig/connect" className="inline-flex items-center gap-1.5 text-pink-400 hover:text-pink-300 text-sm">
                 <Plus size={14} /> 別のアカウントを連携
               </a>
             )}
@@ -306,48 +503,270 @@ export function DashboardClient({
       {/* ストーリーズ作成 */}
       <section className="mb-8">
         <h2 className="text-white font-semibold text-sm uppercase tracking-wider mb-3 flex items-center gap-2">
-          <Sparkles size={16} className="text-pink-400" /> ストーリーズを自動作成
+          <Sparkles size={16} className="text-pink-400" /> ストーリーズを作成
         </h2>
-        <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3">
-          <div className="flex flex-col md:flex-row gap-3">
+        <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
+          {/* モード切替 */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setCreateMode("ai")}
+              className={`text-sm font-semibold px-4 py-2 rounded-lg border transition-colors ${
+                createMode === "ai"
+                  ? "border-pink-500 bg-pink-500/10 text-white"
+                  : "border-neutral-700 text-gray-400 hover:text-white"
+              }`}
+            >
+              <Sparkles size={13} className="inline mr-1.5 -mt-0.5" />AIおまかせ
+            </button>
+            <button
+              onClick={() => setCreateMode("media")}
+              className={`text-sm font-semibold px-4 py-2 rounded-lg border transition-colors ${
+                createMode === "media"
+                  ? "border-pink-500 bg-pink-500/10 text-white"
+                  : "border-neutral-700 text-gray-400 hover:text-white"
+              }`}
+            >
+              <Film size={13} className="inline mr-1.5 -mt-0.5" />写真・動画から作成
+            </button>
             {accounts.length > 1 && (
               <select
                 value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                className="bg-black border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-pink-500"
+                onChange={(e) => {
+                  setAccountId(e.target.value);
+                  setSelectedIg(null);
+                  setIgItems(null);
+                  if (createMode === "media" && mediaTab === "ig") void loadIgMedia(e.target.value);
+                }}
+                className="ml-auto bg-black border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-pink-500"
               >
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>@{a.username}</option>
                 ))}
               </select>
             )}
-            <select
-              value={style}
-              onChange={(e) => setStyle(e.target.value)}
-              className="bg-black border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-pink-500"
-            >
-              {STYLE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>背景: {o.label}</option>
-              ))}
-            </select>
           </div>
-          <textarea
-            value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
-            rows={2}
-            placeholder="今回のテーマ・指示（任意）例: 新メニューの告知 / 今日の営業時間 / フォロワーへの質問"
-            className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none resize-none"
-          />
-          <button
-            onClick={generate}
-            disabled={generating || accounts.length === 0}
-            className="flex items-center gap-2 bg-pink-600 hover:bg-pink-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
-          >
-            {generating ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-            {generating ? "作成中…（30秒ほどかかります）" : "AIでストーリーズを作成"}
-          </button>
-          {accounts.length === 0 && (
-            <p className="text-gray-500 text-xs">アカウント連携後に利用できます</p>
+
+          {createMode === "ai" ? (
+            <>
+              <div className="flex flex-col md:flex-row gap-3">
+                <select
+                  value={style}
+                  onChange={(e) => setStyle(e.target.value)}
+                  className="bg-black border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-pink-500"
+                >
+                  {STYLE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>背景: {o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <textarea
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                rows={2}
+                placeholder="今回のテーマ・指示（任意）例: 新メニューの告知 / 今日の営業時間 / フォロワーへの質問"
+                className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none resize-none"
+              />
+              <button
+                onClick={generateAi}
+                disabled={generating || accounts.length === 0}
+                className="flex items-center gap-2 bg-pink-600 hover:bg-pink-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
+              >
+                {generating ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                {generating ? "作成中…（30秒ほどかかります）" : "AIでストーリーズを作成"}
+              </button>
+            </>
+          ) : (
+            <>
+              {/* 素材タブ */}
+              <div className="flex gap-2 border-b border-neutral-800 pb-3">
+                {([
+                  { key: "upload", label: "アップロード", icon: HardDriveUpload },
+                  { key: "drive", label: "Googleドライブ", icon: FolderOpen },
+                  { key: "ig", label: "過去のIG投稿", icon: History },
+                ] as const).map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => openMediaTab(t.key)}
+                    className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
+                      mediaTab === t.key
+                        ? "border-pink-500 bg-pink-500/10 text-white"
+                        : "border-neutral-700 text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <t.icon size={12} /> {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* アップロード */}
+              {mediaTab === "upload" && (
+                <div className="space-y-3">
+                  <label className="block border border-dashed border-neutral-700 hover:border-pink-500 rounded-xl p-6 text-center cursor-pointer transition-colors">
+                    <input type="file" accept="image/*" className="hidden" onChange={onFileSelected} />
+                    {upload ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={upload.dataUrl} alt={upload.fileName} className="max-h-48 mx-auto rounded-lg" />
+                    ) : (
+                      <span className="text-gray-500 text-sm">クリックして画像を選択（JPG/PNG・15MBまで）<br />
+                        <span className="text-xs">動画はGoogleドライブまたは過去のIG投稿から使えます</span>
+                      </span>
+                    )}
+                  </label>
+                </div>
+              )}
+
+              {/* Googleドライブ */}
+              {mediaTab === "drive" && (
+                <div className="space-y-3">
+                  {!drive.connected ? (
+                    <div className="text-center py-4">
+                      <p className="text-gray-400 text-sm mb-3">
+                        Googleドライブを連携すると、指定フォルダの写真・動画を素材として使えます
+                      </p>
+                      <a
+                        href="/api/gdrive/connect"
+                        className="inline-flex items-center gap-2 bg-white text-gray-800 hover:bg-gray-100 text-sm font-semibold px-4 py-2 rounded-lg"
+                      >
+                        <FolderOpen size={15} /> Googleドライブを連携
+                      </a>
+                    </div>
+                  ) : !driveFolder || editFolder ? (
+                    <div className="space-y-2">
+                      <p className="text-gray-400 text-xs">
+                        素材フォルダのURLを貼り付けてください（ドライブでフォルダを開いたときのアドレス）
+                        {drive.googleEmail && <span className="ml-2 text-gray-600">連携中: {drive.googleEmail}</span>}
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={folderUrl}
+                          onChange={(e) => setFolderUrl(e.target.value)}
+                          placeholder="https://drive.google.com/drive/folders/..."
+                          className="flex-1 bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
+                        />
+                        <button
+                          onClick={saveFolder}
+                          disabled={driveLoading || !folderUrl.trim()}
+                          className="bg-pink-600 hover:bg-pink-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+                        >
+                          {driveLoading ? <Loader2 size={14} className="animate-spin" /> : "設定"}
+                        </button>
+                        {editFolder && (
+                          <button onClick={() => setEditFolder(false)} className="text-gray-500 text-sm px-2">キャンセル</button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-3 text-xs text-gray-400">
+                        <span className="flex items-center gap-1.5"><FolderOpen size={13} className="text-pink-400" /> {driveFolder.name}</span>
+                        <button onClick={() => setEditFolder(true)} className="text-gray-600 hover:text-white">フォルダ変更</button>
+                        <button onClick={() => { setDriveFiles(null); void loadDriveFiles(); }} className="flex items-center gap-1 text-gray-600 hover:text-white">
+                          <RefreshCw size={11} /> 再読込
+                        </button>
+                      </div>
+                      {driveLoading ? (
+                        <p className="text-gray-500 text-sm py-4 text-center"><Loader2 size={16} className="animate-spin inline mr-2" />読み込み中…</p>
+                      ) : (driveFiles ?? []).length === 0 ? (
+                        <p className="text-gray-600 text-sm py-4 text-center">フォルダに画像・動画がありません</p>
+                      ) : (
+                        <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 max-h-64 overflow-y-auto pr-1">
+                          {(driveFiles ?? []).map((f) => (
+                            <button
+                              key={f.id}
+                              onClick={() => setSelectedDrive(selectedDrive?.id === f.id ? null : f)}
+                              title={f.name}
+                              className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-colors bg-neutral-900 ${
+                                selectedDrive?.id === f.id ? "border-pink-500" : "border-transparent hover:border-neutral-600"
+                              }`}
+                            >
+                              {f.thumbnailLink ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={f.thumbnailLink} alt={f.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              ) : (
+                                <span className="absolute inset-0 grid place-items-center text-gray-600 text-[10px] p-1 break-all">{f.name}</span>
+                              )}
+                              {f.mimeType.startsWith("video/") && (
+                                <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] font-semibold px-1 rounded flex items-center gap-0.5">
+                                  <Film size={9} />{fmtDuration(f.durationMillis)}
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* 過去のIG投稿 */}
+              {mediaTab === "ig" && (
+                <div className="space-y-3">
+                  {igLoading ? (
+                    <p className="text-gray-500 text-sm py-4 text-center"><Loader2 size={16} className="animate-spin inline mr-2" />読み込み中…</p>
+                  ) : (igItems ?? []).length === 0 ? (
+                    <p className="text-gray-600 text-sm py-4 text-center">過去の投稿が見つかりません</p>
+                  ) : (
+                    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 max-h-64 overflow-y-auto pr-1">
+                      {(igItems ?? []).map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => setSelectedIg(selectedIg?.id === m.id ? null : m)}
+                          className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-colors bg-neutral-900 ${
+                            selectedIg?.id === m.id ? "border-pink-500" : "border-transparent hover:border-neutral-600"
+                          }`}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={m.mediaType === "VIDEO" ? (m.thumbnailUrl ?? m.mediaUrl) : m.mediaUrl}
+                            alt=""
+                            className="w-full h-full object-cover"
+                          />
+                          {m.mediaType === "VIDEO" && (
+                            <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] font-semibold px-1 rounded flex items-center gap-0.5">
+                              <Film size={9} />動画
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 共通オプション */}
+              <label className={`flex items-center gap-2.5 ${selectedIsVideo ? "opacity-40" : "cursor-pointer"}`}>
+                <input
+                  type="checkbox"
+                  checked={overlay && !selectedIsVideo}
+                  disabled={selectedIsVideo}
+                  onChange={(e) => setOverlay(e.target.checked)}
+                  className="w-4 h-4 accent-pink-500"
+                />
+                <span className="text-sm text-white">
+                  AIがコピー（文字）を考えて画像に載せる
+                  {selectedIsVideo && <span className="text-gray-500 text-xs ml-2">※動画はそのまま投稿されます</span>}
+                </span>
+              </label>
+              {overlay && !selectedIsVideo && (
+                <textarea
+                  value={instruction}
+                  onChange={(e) => setInstruction(e.target.value)}
+                  rows={2}
+                  placeholder="コピーの方向性（任意）例: 新商品の入荷告知として / 週末セールの案内"
+                  className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none resize-none"
+                />
+              )}
+              <button
+                onClick={createFromMedia}
+                disabled={generating || accounts.length === 0}
+                className="flex items-center gap-2 bg-pink-600 hover:bg-pink-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
+              >
+                {generating ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                {generating ? "作成中…" : "この素材でストーリーズを作成"}
+              </button>
+            </>
           )}
         </div>
       </section>
@@ -363,32 +782,34 @@ export function DashboardClient({
               </button>
             </div>
             <div className="flex flex-col md:flex-row gap-5">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={selected.imageUrl}
-                alt={selected.overlayTitle ?? "story"}
-                className="w-full max-w-[240px] aspect-[9/16] object-cover rounded-xl border border-neutral-800 mx-auto md:mx-0"
-              />
+              <div className="relative w-full max-w-[240px] mx-auto md:mx-0">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={selected.imageUrl}
+                  alt={selected.overlayTitle ?? "story"}
+                  className="w-full aspect-[9/16] object-cover rounded-xl border border-neutral-800"
+                />
+                {selected.mediaType === "video" && (
+                  <span className="absolute top-2 right-2 bg-black/70 text-white text-xs font-semibold px-2 py-0.5 rounded flex items-center gap-1">
+                    <Film size={11} /> 動画
+                  </span>
+                )}
+              </div>
               <div className="flex-1 space-y-3 min-w-0">
                 <div>
                   <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded ${STATUS_BADGE[selected.status]?.cls ?? ""}`}>
                     {STATUS_BADGE[selected.status]?.label ?? selected.status}
                   </span>
                   <span className="text-gray-500 text-xs ml-2">@{selected.username}</span>
-                  {selected.source === "auto" && (
-                    <span className="text-gray-500 text-xs ml-2">（自動運用で生成）</span>
+                  {selected.source === "auto" && <span className="text-gray-500 text-xs ml-2">（自動運用で生成）</span>}
+                  {selected.mediaType === "video" && (
+                    <span className="text-gray-500 text-xs ml-2">動画（プレビューはサムネイル）</span>
                   )}
                 </div>
-                {selected.overlayTitle && (
-                  <p className="text-white font-bold">{selected.overlayTitle}</p>
-                )}
+                {selected.overlayTitle && <p className="text-white font-bold">{selected.overlayTitle}</p>}
                 {selected.overlaySub && <p className="text-gray-300 text-sm">{selected.overlaySub}</p>}
-                {selected.concept && (
-                  <p className="text-gray-500 text-xs leading-relaxed">狙い: {selected.concept}</p>
-                )}
-                {selected.errorMessage && (
-                  <p className="text-red-400 text-xs break-all">エラー: {selected.errorMessage}</p>
-                )}
+                {selected.concept && <p className="text-gray-500 text-xs leading-relaxed">狙い: {selected.concept}</p>}
+                {selected.errorMessage && <p className="text-red-400 text-xs break-all">エラー: {selected.errorMessage}</p>}
                 {selected.scheduledAt && selected.status === "scheduled" && (
                   <p className="text-sky-400 text-sm flex items-center gap-1.5">
                     <CalendarClock size={14} />
@@ -408,19 +829,11 @@ export function DashboardClient({
                         今すぐ投稿
                       </button>
                       {selected.status === "scheduled" && (
-                        <button
-                          onClick={() => unschedule(selected.id)}
-                          disabled={busy}
-                          className="text-gray-400 hover:text-white text-sm px-3 py-2"
-                        >
+                        <button onClick={() => unschedule(selected.id)} disabled={busy} className="text-gray-400 hover:text-white text-sm px-3 py-2">
                           予約を解除
                         </button>
                       )}
-                      <button
-                        onClick={() => remove(selected.id)}
-                        disabled={busy}
-                        className="flex items-center gap-1 text-red-400 hover:text-red-300 text-sm px-3 py-2"
-                      >
+                      <button onClick={() => remove(selected.id)} disabled={busy} className="flex items-center gap-1 text-red-400 hover:text-red-300 text-sm px-3 py-2">
                         <Trash2 size={14} /> 削除
                       </button>
                     </div>
@@ -451,15 +864,12 @@ export function DashboardClient({
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-white font-semibold text-sm uppercase tracking-wider">ストーリーズ</h2>
-          <button
-            onClick={refreshStories}
-            className="flex items-center gap-1 text-gray-500 hover:text-white text-xs"
-          >
+          <button onClick={refreshStories} className="flex items-center gap-1 text-gray-500 hover:text-white text-xs">
             <RefreshCw size={12} /> 更新
           </button>
         </div>
         {stories.length === 0 ? (
-          <p className="text-gray-600 text-sm">まだストーリーズがありません。上のフォームからAIで作成できます。</p>
+          <p className="text-gray-600 text-sm">まだストーリーズがありません。上のフォームから作成できます。</p>
         ) : (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
             {stories.map((s) => (
@@ -472,11 +882,14 @@ export function DashboardClient({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={s.imageUrl} alt={s.overlayTitle ?? "story"} className="w-full h-full object-cover" />
-                <span
-                  className={`absolute top-1.5 left-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded ${STATUS_BADGE[s.status]?.cls ?? ""}`}
-                >
+                <span className={`absolute top-1.5 left-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded ${STATUS_BADGE[s.status]?.cls ?? ""}`}>
                   {STATUS_BADGE[s.status]?.label ?? s.status}
                 </span>
+                {s.mediaType === "video" && (
+                  <span className="absolute bottom-1.5 right-1.5 bg-black/70 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                    <Film size={9} /> 動画
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -489,10 +902,12 @@ export function DashboardClient({
 // アカウントカード＋オートパイロット設定
 function AccountCard({
   account,
+  driveConnected,
   onChanged,
   onToast,
 }: {
   account: AccountView;
+  driveConnected: boolean;
   onChanged: () => void;
   onToast: (kind: "ok" | "error", text: string) => void;
 }) {
@@ -501,6 +916,7 @@ function AccountCard({
   const [times, setTimes] = useState(account.autoStoryTimes ?? "");
   const [theme, setTheme] = useState(account.autoStoryTheme ?? "");
   const [styleValue, setStyleValue] = useState(account.autoStoryStyle);
+  const [sourceValue, setSourceValue] = useState(account.autoStorySource);
   const [saving, setSaving] = useState(false);
 
   async function save() {
@@ -514,6 +930,7 @@ function AccountCard({
           autoStoryTimes: times,
           autoStoryTheme: theme,
           autoStoryStyle: styleValue,
+          autoStorySource: sourceValue,
         }),
       });
       const json = await res.json();
@@ -588,7 +1005,7 @@ function AccountCard({
             />
             <span className="text-sm text-white">ストーリーズを毎日自動作成して投稿する</span>
           </label>
-          <div className="grid md:grid-cols-2 gap-3">
+          <div className="grid md:grid-cols-3 gap-3">
             <div>
               <label className="block text-gray-400 text-xs mb-1.5">投稿時刻（日本時間・カンマ区切り）</label>
               <input
@@ -600,7 +1017,24 @@ function AccountCard({
               />
             </div>
             <div>
-              <label className="block text-gray-400 text-xs mb-1.5">背景スタイル</label>
+              <label className="block text-gray-400 text-xs mb-1.5">素材ソース</label>
+              <select
+                value={sourceValue}
+                onChange={(e) => setSourceValue(e.target.value)}
+                className="w-full bg-black border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-pink-500"
+              >
+                {AUTO_SOURCE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              {sourceValue !== "ai" && !driveConnected && (
+                <p className="text-amber-400 text-[11px] mt-1">
+                  ドライブ未設定です（素材がない場合はAI生成にフォールバックします）
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-gray-400 text-xs mb-1.5">AI生成時の背景スタイル</label>
               <select
                 value={styleValue}
                 onChange={(e) => setStyleValue(e.target.value)}
@@ -614,7 +1048,7 @@ function AccountCard({
           </div>
           <div>
             <label className="block text-gray-400 text-xs mb-1.5">
-              アカウントのテーマ・方向性（自動生成の軸になります）
+              アカウントのテーマ・方向性（コピー・生成の軸になります）
             </label>
             <textarea
               value={theme}

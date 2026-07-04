@@ -32,11 +32,23 @@ export async function publishStoryRecord(storyId: string): Promise<PublishResult
     return fail("Instagramアカウントの再連携が必要です（トークン失効）");
   }
 
-  // IG サーバーが取得しに来る公開URL（このアプリの画像配信ルート）
-  const imageUrl = `${appBaseUrl()}/api/story-image/${story.id}`;
+  // IG サーバーが取得しに来る公開URL。
+  // 画像: このアプリの画像配信ルート / 動画: 直リンク or ドライブプロキシ
+  const base = appBaseUrl();
+  let media: { imageUrl?: string; videoUrl?: string };
+  if (story.mediaType === "video") {
+    if (!story.videoSrc) return fail("動画ソースが見つかりません");
+    media = {
+      videoUrl: story.videoSrc.startsWith("drive:")
+        ? `${base}/api/story-video/${story.id}?t=${story.videoToken ?? ""}`
+        : story.videoSrc,
+    };
+  } else {
+    media = { imageUrl: `${base}/api/story-image/${story.id}` };
+  }
 
   try {
-    const igMediaId = await publishStory(token, story.igAccount.igUserId, imageUrl);
+    const igMediaId = await publishStory(token, story.igAccount.igUserId, media);
     await prisma.story.update({
       where: { id: storyId },
       data: { status: "posted", postedAt: new Date(), igMediaId, errorMessage: null },
