@@ -33,3 +33,8 @@ env:
   # ── 定期実行（/api/cron）保護用。Cloud Scheduler から Bearer で渡す ──
   - variable: CRON_SECRET
     secret: CRON_SECRET
+  # ── Google OAuth（ログイン用。x-step と同一クライアント） ──
+  - variable: AUTH_GOOGLE_ID
+    secret: AUTH_GOOGLE_ID
+  - variable: AUTH_GOOGLE_SECRET
+    secret: AUTH_GOOGLE_SECRET

@@ -54,6 +54,12 @@ Authorization: Bearer <CRON_SECRET>
 - `task=auto` … オートパイロット（自動生成→即投稿。時刻窓は45分）
 - `task=maintain` … 長期トークンのリフレッシュ（1日1回で十分）
 
+## Googleログイン
+
+x-step と同じ Google OAuth クライアントを流用している。本番デプロイ時は
+Google Cloud Console のそのクライアントに、承認済みリダイレクトURIとして
+`https://<本番ドメイン>/api/auth/callback/google` を追加すること（localhost:3000 は登録済み）。
+
 ## デプロイ（Firebase App Hosting）
 
 x-step と同じ手順。GitHub リポジトリを接続してバックエンド `ig-agent` を作成し、
