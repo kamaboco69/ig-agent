@@ -91,6 +91,7 @@ export async function createStoryFromMedia(
       caption: media.kind === "ig" ? media.caption : null,
       fileName: media.kind !== "ig" ? media.fileName : null,
       recentTitles: recent.map((r) => r.overlayTitle!).filter(Boolean),
+      toneProfile: account.toneProfile,
     });
   }
 

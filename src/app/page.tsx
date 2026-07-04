@@ -1,14 +1,14 @@
 import { prisma } from "@/lib/db";
 import { requireOrgPage } from "@/lib/auth-helpers";
 import { igConfigured } from "@/lib/ig-api";
-import { DashboardClient, type AccountView, type StoryView, type DriveView } from "./DashboardClient";
+import { DashboardClient, type AccountView, type StoryView, type DriveView, type RecurringView } from "./DashboardClient";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   const { organizationId } = await requireOrgPage();
 
-  const [accounts, stories, driveIntegration] = await Promise.all([
+  const [accounts, stories, driveIntegration, recurringItems] = await Promise.all([
     prisma.igAccount.findMany({
       where: { organizationId },
       orderBy: { createdAt: "asc" },
@@ -25,6 +25,8 @@ export default async function HomePage() {
         autoStoryTheme: true,
         autoStoryStyle: true,
         autoStorySource: true,
+        toneProfile: true,
+        toneProfileAt: true,
       },
     }),
     prisma.story.findMany({
@@ -52,11 +54,42 @@ export default async function HomePage() {
       where: { organizationId },
       select: { googleEmail: true, folderId: true, folderName: true, status: true },
     }),
+    prisma.recurringStory.findMany({
+      where: { organizationId },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        igAccountId: true,
+        name: true,
+        mode: true,
+        instruction: true,
+        imageData: true,
+        intervalDays: true,
+        timeJst: true,
+        enabled: true,
+        nextRunAt: true,
+        igAccount: { select: { username: true } },
+      },
+    }),
   ]);
 
   const accountViews: AccountView[] = accounts.map((a) => ({
     ...a,
     tokenExpiresAt: a.tokenExpiresAt?.toISOString() ?? null,
+    toneProfileAt: a.toneProfileAt?.toISOString() ?? null,
+  }));
+  const recurringViews: RecurringView[] = recurringItems.map((r) => ({
+    id: r.id,
+    igAccountId: r.igAccountId,
+    username: r.igAccount.username,
+    name: r.name,
+    mode: r.mode,
+    instruction: r.instruction,
+    hasImage: !!r.imageData,
+    intervalDays: r.intervalDays,
+    timeJst: r.timeJst,
+    enabled: r.enabled,
+    nextRunAt: r.nextRunAt.toISOString(),
   }));
   const storyViews: StoryView[] = stories.map((s) => ({
     id: s.id,
@@ -87,6 +120,7 @@ export default async function HomePage() {
       configured={igConfigured()}
       initialAccounts={accountViews}
       initialStories={storyViews}
+      initialRecurring={recurringViews}
       drive={driveView}
     />
   );

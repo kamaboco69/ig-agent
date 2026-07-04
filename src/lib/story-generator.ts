@@ -30,6 +30,7 @@ export interface PlanInput {
   theme?: string | null; // アカウントのテーマ・方向性（自動運用設定 or 入力フォーム）
   instruction?: string | null; // 今回の指示（任意の自由入力）
   recentTitles?: string[]; // 直近のコピー（マンネリ回避）
+  toneProfile?: string | null; // 過去投稿から学習した文体プロファイル（lib/tone.ts）
 }
 
 // Claude でストーリーズの構成を立てる
@@ -41,6 +42,9 @@ export async function planStory(input: PlanInput): Promise<StoryPlan> {
   parts.push(`Instagramアカウント: @${input.username}`);
   if (input.theme?.trim()) parts.push(`アカウントのテーマ・方向性: ${input.theme.trim()}`);
   if (input.instruction?.trim()) parts.push(`今回の指示: ${input.instruction.trim()}`);
+  if (input.toneProfile?.trim()) {
+    parts.push(`このアカウントの文体プロファイル（コピーは必ずこの文体・トーンに合わせる）:\n${input.toneProfile.trim()}`);
+  }
   if (input.recentTitles?.length) {
     parts.push(`直近のストーリーズのコピー（重複・マンネリを避ける）:\n- ${input.recentTitles.join("\n- ")}`);
   }
@@ -99,6 +103,7 @@ export async function planCopyForMedia(input: {
   caption?: string | null;
   fileName?: string | null;
   recentTitles?: string[];
+  toneProfile?: string | null;
 }): Promise<MediaCopyPlan> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY が未設定です");
@@ -109,6 +114,9 @@ export async function planCopyForMedia(input: {
   if (input.instruction?.trim()) parts.push(`今回の指示: ${input.instruction.trim()}`);
   if (input.caption?.trim()) parts.push(`素材写真の元キャプション: ${input.caption.trim().slice(0, 500)}`);
   if (input.fileName?.trim()) parts.push(`素材写真のファイル名: ${input.fileName.trim()}`);
+  if (input.toneProfile?.trim()) {
+    parts.push(`このアカウントの文体プロファイル（コピーは必ずこの文体・トーンに合わせる）:\n${input.toneProfile.trim()}`);
+  }
   if (input.recentTitles?.length) {
     parts.push(`直近のストーリーズのコピー（重複・マンネリを避ける）:\n- ${input.recentTitles.join("\n- ")}`);
   }

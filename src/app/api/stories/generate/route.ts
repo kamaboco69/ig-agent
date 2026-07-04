@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
       instruction: body.instruction,
       recentTitles: recent.map((r) => r.overlayTitle!).filter(Boolean),
       style: body.style ?? account.autoStoryStyle,
+      toneProfile: account.toneProfile,
     });
 
     const story = await prisma.story.create({

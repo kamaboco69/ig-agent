@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { signOut } from "next-auth/react";
 import {
+  BookOpen,
   CalendarClock,
   Camera,
   Check,
@@ -15,6 +16,7 @@ import {
   LogOut,
   Plus,
   RefreshCw,
+  Repeat,
   Send,
   Settings2,
   Sparkles,
@@ -35,6 +37,22 @@ export interface AccountView {
   autoStoryTheme: string | null;
   autoStoryStyle: string;
   autoStorySource: string;
+  toneProfile: string | null;
+  toneProfileAt: string | null;
+}
+
+export interface RecurringView {
+  id: string;
+  igAccountId: string;
+  username: string;
+  name: string;
+  mode: string;
+  instruction: string | null;
+  hasImage: boolean;
+  intervalDays: number;
+  timeJst: string;
+  enabled: boolean;
+  nextRunAt: string;
 }
 
 export interface StoryView {
@@ -93,6 +111,16 @@ const AUTO_SOURCE_OPTIONS = [
   { value: "mix", label: "AIと素材を交互に" },
 ];
 
+const INTERVAL_OPTIONS = [
+  { value: 1, label: "毎日" },
+  { value: 2, label: "2日に1回" },
+  { value: 3, label: "3日に1回" },
+  { value: 7, label: "毎週" },
+  { value: 14, label: "2週に1回" },
+];
+
+const intervalLabel = (d: number) => INTERVAL_OPTIONS.find((o) => o.value === d)?.label ?? `${d}日毎`;
+
 const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   draft: { label: "下書き", cls: "bg-neutral-700 text-gray-200" },
   scheduled: { label: "予約済み", cls: "bg-sky-600/80 text-white" },
@@ -116,11 +144,13 @@ export function DashboardClient({
   configured,
   initialAccounts,
   initialStories,
+  initialRecurring,
   drive,
 }: {
   configured: boolean;
   initialAccounts: AccountView[];
   initialStories: StoryView[];
+  initialRecurring: RecurringView[];
   drive: DriveView;
 }) {
   const router = useRouter();
@@ -175,6 +205,17 @@ export function DashboardClient({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [scheduleAt, setScheduleAt] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // 定期配信
+  const [recurring, setRecurring] = useState(initialRecurring);
+  const [showRecurringForm, setShowRecurringForm] = useState(initialRecurring.length === 0);
+  const [recName, setRecName] = useState("");
+  const [recMode, setRecMode] = useState<"ai" | "fixed">("ai");
+  const [recInstruction, setRecInstruction] = useState("");
+  const [recImage, setRecImage] = useState<{ dataUrl: string; fileName: string } | null>(null);
+  const [recInterval, setRecInterval] = useState(1);
+  const [recTime, setRecTime] = useState("18:00");
+  const [recSaving, setRecSaving] = useState(false);
 
   const selected = useMemo(
     () => stories.find((s) => s.id === selectedId) ?? null,
@@ -429,6 +470,73 @@ export function DashboardClient({
     const s = Math.round(ms / 1000);
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   };
+
+  // ── 定期配信 ──
+  function onRecFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return showToast("error", "画像ファイルを選択してください");
+    if (file.size > 15 * 1024 * 1024) return showToast("error", "画像は15MB以下にしてください");
+    const reader = new FileReader();
+    reader.onload = () => setRecImage({ dataUrl: String(reader.result), fileName: file.name });
+    reader.readAsDataURL(file);
+  }
+
+  async function addRecurring() {
+    if (!accountId) return showToast("error", "Instagramアカウントを先に連携してください");
+    setRecSaving(true);
+    try {
+      const res = await fetch("/api/recurring", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          igAccountId: accountId,
+          name: recName,
+          mode: recMode,
+          instruction: recInstruction,
+          dataUrl: recImage?.dataUrl,
+          intervalDays: recInterval,
+          timeJst: recTime,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "登録に失敗しました");
+      const username = accounts.find((a) => a.id === accountId)?.username ?? "";
+      setRecurring((prev) => [...prev, { ...json.item, username }]);
+      setRecName("");
+      setRecInstruction("");
+      setRecImage(null);
+      setShowRecurringForm(false);
+      showToast("ok", "定期配信を登録しました");
+    } catch (e) {
+      showToast("error", e instanceof Error ? e.message : "登録に失敗しました");
+    } finally {
+      setRecSaving(false);
+    }
+  }
+
+  async function toggleRecurring(id: string, enabled: boolean) {
+    setRecurring((prev) => prev.map((r) => (r.id === id ? { ...r, enabled } : r)));
+    const res = await fetch(`/api/recurring/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) {
+      setRecurring((prev) => prev.map((r) => (r.id === id ? { ...r, enabled: !enabled } : r)));
+      showToast("error", "更新に失敗しました");
+    }
+  }
+
+  async function deleteRecurring(id: string) {
+    if (!confirm("この定期配信を削除しますか？")) return;
+    const res = await fetch(`/api/recurring/${id}`, { method: "DELETE" });
+    if (res.ok || res.status === 204) {
+      setRecurring((prev) => prev.filter((r) => r.id !== id));
+    } else {
+      showToast("error", "削除に失敗しました");
+    }
+  }
 
   return (
     <div className="min-h-screen max-w-6xl mx-auto px-4 py-6">
@@ -771,6 +879,134 @@ export function DashboardClient({
         </div>
       </section>
 
+      {/* 定期配信 */}
+      <section className="mb-8">
+        <h2 className="text-white font-semibold text-sm uppercase tracking-wider mb-3 flex items-center gap-2">
+          <Repeat size={16} className="text-pink-400" /> 定期配信
+        </h2>
+        <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3">
+          <p className="text-gray-500 text-xs">
+            「本日18時オープン」のような繰り返し投稿を登録すると、設定した間隔・時刻で自動投稿します。
+            AI生成モードはコピーが毎回少しずつ変わるのでマンネリしません。
+          </p>
+
+          {recurring.length > 0 && (
+            <div className="space-y-2">
+              {recurring.map((r) => (
+                <div key={r.id} className="flex items-center gap-3 bg-black/40 border border-neutral-800 rounded-lg px-3 py-2.5">
+                  <button
+                    onClick={() => toggleRecurring(r.id, !r.enabled)}
+                    className={`relative w-9 h-5 rounded-full transition-colors flex-none ${r.enabled ? "bg-pink-600" : "bg-neutral-700"}`}
+                    title={r.enabled ? "有効（クリックで停止）" : "停止中（クリックで再開）"}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${r.enabled ? "left-[18px]" : "left-0.5"}`} />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-sm font-semibold truncate">{r.name}</p>
+                    <p className="text-gray-500 text-xs truncate">
+                      @{r.username}・{r.mode === "fixed" ? "固定画像" : "AI生成"}・{intervalLabel(r.intervalDays)} {r.timeJst}
+                      {r.enabled && (
+                        <span className="ml-2 text-sky-400">
+                          次回 {new Date(r.nextRunAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <button onClick={() => deleteRecurring(r.id)} className="text-gray-600 hover:text-red-400 flex-none">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {showRecurringForm ? (
+            <div className="space-y-3 pt-2 border-t border-neutral-800">
+              <div className="grid md:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  value={recName}
+                  onChange={(e) => setRecName(e.target.value)}
+                  placeholder="名前（例: 開店告知）"
+                  className="bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
+                />
+                <div className="flex gap-2 items-center">
+                  <select
+                    value={recInterval}
+                    onChange={(e) => setRecInterval(Number(e.target.value))}
+                    className="flex-1 bg-black border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-pink-500"
+                  >
+                    {INTERVAL_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="time"
+                    value={recTime}
+                    onChange={(e) => setRecTime(e.target.value)}
+                    className="bg-black border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-pink-500 [color-scheme:dark]"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-2">
+                {(["ai", "fixed"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setRecMode(m)}
+                    className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
+                      recMode === m ? "border-pink-500 bg-pink-500/10 text-white" : "border-neutral-700 text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    {m === "ai" ? "AIで毎回生成（コピー日替わり）" : "登録画像をそのまま投稿"}
+                  </button>
+                ))}
+              </div>
+              {recMode === "ai" ? (
+                <textarea
+                  value={recInstruction}
+                  onChange={(e) => setRecInstruction(e.target.value)}
+                  rows={2}
+                  placeholder="生成指示（例: 本日18時オープンの告知。今日のおすすめを一言添えて来店を促す）"
+                  className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none resize-none"
+                />
+              ) : (
+                <label className="block border border-dashed border-neutral-700 hover:border-pink-500 rounded-xl p-4 text-center cursor-pointer transition-colors">
+                  <input type="file" accept="image/*" className="hidden" onChange={onRecFileSelected} />
+                  {recImage ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={recImage.dataUrl} alt={recImage.fileName} className="max-h-32 mx-auto rounded-lg" />
+                  ) : (
+                    <span className="text-gray-500 text-sm">毎回投稿する画像を選択</span>
+                  )}
+                </label>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={addRecurring}
+                  disabled={recSaving || accounts.length === 0}
+                  className="flex items-center gap-1.5 bg-pink-600 hover:bg-pink-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+                >
+                  {recSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                  登録
+                </button>
+                {recurring.length > 0 && (
+                  <button onClick={() => setShowRecurringForm(false)} className="text-gray-500 text-sm px-2">
+                    キャンセル
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowRecurringForm(true)}
+              className="flex items-center gap-1.5 text-pink-400 hover:text-pink-300 text-sm"
+            >
+              <Plus size={14} /> 定期配信を追加
+            </button>
+          )}
+        </div>
+      </section>
+
       {/* 詳細パネル */}
       {selected && (
         <section className="mb-8">
@@ -918,6 +1154,26 @@ function AccountCard({
   const [styleValue, setStyleValue] = useState(account.autoStoryStyle);
   const [sourceValue, setSourceValue] = useState(account.autoStorySource);
   const [saving, setSaving] = useState(false);
+  const [tone, setTone] = useState<{ profile: string | null; at: string | null }>({
+    profile: account.toneProfile,
+    at: account.toneProfileAt,
+  });
+  const [learning, setLearning] = useState(false);
+
+  async function learnTone() {
+    setLearning(true);
+    try {
+      const res = await fetch(`/api/ig/accounts/${account.id}/learn`, { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "学習に失敗しました");
+      setTone({ profile: json.toneProfile, at: json.toneProfileAt });
+      onToast("ok", "過去投稿から文体を学習しました。今後のコピー生成に反映されます");
+    } catch (e) {
+      onToast("error", e instanceof Error ? e.message : "学習に失敗しました");
+    } finally {
+      setLearning(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -1058,6 +1314,35 @@ function AccountCard({
               className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2 text-white text-sm focus:outline-none resize-none"
             />
           </div>
+          {/* 文体プロファイル */}
+          <div className="pt-3 border-t border-neutral-800">
+            <p className="text-gray-400 text-xs mb-2 flex items-center gap-1.5">
+              <BookOpen size={12} className="text-pink-400" />
+              文体プロファイル — 過去投稿のキャプションからトーンを学習し、すべてのコピー生成に反映します
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className={`text-xs ${tone.profile ? "text-emerald-400" : "text-gray-500"}`}>
+                {tone.profile
+                  ? `学習済み（${tone.at ? new Date(tone.at).toLocaleDateString("ja-JP") : ""}・週1回自動更新）`
+                  : "未学習（週1回の自動学習を待つか、今すぐ学習できます）"}
+              </span>
+              <button
+                onClick={learnTone}
+                disabled={learning}
+                className="flex items-center gap-1.5 text-xs border border-neutral-700 hover:border-pink-500 text-gray-300 hover:text-white rounded-lg px-3 py-1.5 transition-colors disabled:opacity-50"
+              >
+                {learning ? <Loader2 size={12} className="animate-spin" /> : <BookOpen size={12} />}
+                {learning ? "学習中…" : tone.profile ? "再学習" : "今すぐ学習"}
+              </button>
+            </div>
+            {tone.profile && (
+              <details className="mt-2">
+                <summary className="text-gray-600 text-xs cursor-pointer hover:text-gray-400">学習した文体を見る</summary>
+                <pre className="mt-1.5 text-gray-400 text-xs whitespace-pre-wrap bg-black/40 border border-neutral-800 rounded-lg p-3">{tone.profile}</pre>
+              </details>
+            )}
+          </div>
+
           <button
             onClick={save}
             disabled={saving}

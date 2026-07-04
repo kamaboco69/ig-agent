@@ -27,6 +27,7 @@ model Organization {
   igAccounts IgAccount[]
   stories    Story[]
   driveIntegration DriveIntegration?
+  recurringStories RecurringStory[]
 }
 
 // メディアライブラリ用の Google ドライブ連携（組織ごとに1件）。
@@ -131,11 +132,16 @@ model IgAccount {
   autoStorySource  String    @default("ai") // ai（全AI生成）/ library（ドライブ素材から）/ mix（交互）
   lastAutoStoryAt  DateTime? // 最後に自動生成した日時（同一スロットの二重実行防止）
 
+  // 文体プロファイル（過去投稿のキャプションから学習。全テキスト生成に注入）
+  toneProfile   String?
+  toneProfileAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   stories      Story[]
+  recurringStories RecurringStory[]
 
   @@unique([organizationId, igUserId])
   @@index([organizationId])
@@ -172,4 +178,29 @@ model Story {
 
   @@index([organizationId, status])
   @@index([scheduledAt])
+}
+
+// 定期配信（「本日18時オープン」等の繰り返しストーリーズ）。
+// nextRunAt が到来したら cron が生成→即投稿し、intervalDays 分だけ先送りする。
+model RecurringStory {
+  id             String    @id @default(cuid())
+  organizationId String
+  igAccountId    String
+  name           String // 管理用の名前（例: 開店告知）
+  mode           String    @default("ai") // ai（指示から毎回生成・コピー日替わり）/ fixed（登録画像をそのまま投稿）
+  instruction    String? // aiモード: 生成指示（例: 本日18時オープンの告知。来店を促す一言を添える）
+  imageData      String? // fixedモード: 登録画像（1080x1920 JPEG data URL）
+  intervalDays   Int       @default(1) // 1=毎日 / 2=2日に1回 / 7=毎週 …
+  timeJst        String // 投稿時刻（JST "HH:mm"）
+  enabled        Boolean   @default(true)
+  nextRunAt      DateTime // 次回実行時刻（UTC）
+  lastRunAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  igAccount    IgAccount    @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([enabled, nextRunAt])
 }
