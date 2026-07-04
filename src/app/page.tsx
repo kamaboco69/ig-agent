@@ -1,0 +1,77 @@
+import { prisma } from "@/lib/db";
+import { requireOrgPage } from "@/lib/auth-helpers";
+import { igConfigured } from "@/lib/ig-api";
+import { DashboardClient, type AccountView, type StoryView } from "./DashboardClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function HomePage() {
+  const { organizationId } = await requireOrgPage();
+
+  const [accounts, stories] = await Promise.all([
+    prisma.igAccount.findMany({
+      where: { organizationId },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        username: true,
+        name: true,
+        avatarUrl: true,
+        accountType: true,
+        status: true,
+        tokenExpiresAt: true,
+        autoStoryEnabled: true,
+        autoStoryTimes: true,
+        autoStoryTheme: true,
+        autoStoryStyle: true,
+      },
+    }),
+    prisma.story.findMany({
+      where: { organizationId },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        igAccountId: true,
+        concept: true,
+        overlayTitle: true,
+        overlaySub: true,
+        status: true,
+        source: true,
+        scheduledAt: true,
+        postedAt: true,
+        errorMessage: true,
+        createdAt: true,
+        igAccount: { select: { username: true } },
+      },
+    }),
+  ]);
+
+  const accountViews: AccountView[] = accounts.map((a) => ({
+    ...a,
+    tokenExpiresAt: a.tokenExpiresAt?.toISOString() ?? null,
+  }));
+  const storyViews: StoryView[] = stories.map((s) => ({
+    id: s.id,
+    igAccountId: s.igAccountId,
+    username: s.igAccount.username,
+    concept: s.concept,
+    overlayTitle: s.overlayTitle,
+    overlaySub: s.overlaySub,
+    status: s.status,
+    source: s.source,
+    scheduledAt: s.scheduledAt?.toISOString() ?? null,
+    postedAt: s.postedAt?.toISOString() ?? null,
+    errorMessage: s.errorMessage,
+    createdAt: s.createdAt.toISOString(),
+    imageUrl: `/api/story-image/${s.id}`,
+  }));
+
+  return (
+    <DashboardClient
+      configured={igConfigured()}
+      initialAccounts={accountViews}
+      initialStories={storyViews}
+    />
+  );
+}

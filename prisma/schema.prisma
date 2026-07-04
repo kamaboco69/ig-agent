@@ -1,0 +1,150 @@
+// IG Agent — Instagram 自動運用ツール
+// 構成は X Agent (x-step) を踏襲（Next.js 16 + Prisma 7 + NextAuth v5 マルチテナント）
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// マルチテナント基盤（認証 + 組織）
+// ─────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  ownerId   String?
+  plan      String   @default("free") // free / light / standard / pro
+  suspended Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users      User[]
+  igAccounts IgAccount[]
+  stories    Story[]
+}
+
+model User {
+  id             String    @id @default(cuid())
+  name           String?
+  email          String    @unique
+  emailVerified  DateTime?
+  image          String?
+  passwordHash   String? // Credentials ログイン用
+  role           String    @default("user") // user / admin
+  organizationId String?
+  createdAt      DateTime  @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  accounts     Account[]
+  sessions     Session[]
+
+  @@index([organizationId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─────────────────────────────────────────────
+// Instagram 運用ドメイン（すべて organizationId でスコープ）
+// ─────────────────────────────────────────────
+
+// 連携した Instagram プロアカウント（Instagram API with Instagram Login）。
+// トークンは長期トークン（60日）をアプリ層で暗号化して保存し、cron で自動更新する。
+model IgAccount {
+  id             String    @id @default(cuid())
+  organizationId String
+  igUserId       String // Instagram のユーザーID（graph.instagram.com /me の user_id）
+  username       String // @ なしのハンドル
+  name           String?
+  avatarUrl      String?
+  accountType    String? // BUSINESS / MEDIA_CREATOR
+  accessToken    String // 長期トークン（lib/crypto.ts の AES-256-GCM で暗号化）
+  tokenExpiresAt DateTime? // 長期トークンの期限（約60日。cronが自動リフレッシュ）
+  scope          String?
+  status         String    @default("connected") // connected / expired / revoked
+
+  // ストーリーズ自動運用（オートパイロット）
+  autoStoryEnabled Boolean   @default(false)
+  autoStoryTimes   String? // 自動投稿時刻（JST, "08:00,20:00" 形式）
+  autoStoryTheme   String? // 自動生成のテーマ・方向性（自由記述。生成プロンプトに注入）
+  autoStoryStyle   String    @default("auto") // 画像スタイル（story-generator の IMAGE_STYLES キー）
+  lastAutoStoryAt  DateTime? // 最後に自動生成した日時（同一スロットの二重実行防止）
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stories      Story[]
+
+  @@unique([organizationId, igUserId])
+  @@index([organizationId])
+}
+
+// ストーリーズ投稿（AI生成 → 下書き → 即時/予約投稿）。
+// 画像は DB に data URL(JPEG) で保持し、/api/story-image/[id] で公開配信する
+// （IG の media 取り込みは公開URLが必須。App Hosting では public/ が配信されないため）。
+model Story {
+  id             String    @id @default(cuid())
+  organizationId String
+  igAccountId    String
+  concept        String? // AIが立てた構成メモ（テーマ・狙い）
+  overlayTitle   String? // 画像に焼き込んだメインコピー
+  overlaySub     String? // 画像に焼き込んだサブコピー
+  imagePrompt    String? // 背景画像の生成プロンプト（英語）
+  imageData      String // data:image/jpeg;base64,...（1080x1920）
+  status         String    @default("draft") // draft / scheduled / posting / posted / failed
+  source         String    @default("manual") // manual（画面から生成）/ auto（オートパイロット）
+  scheduledAt    DateTime?
+  postedAt       DateTime?
+  igMediaId      String? // 公開後の IG メディアID
+  errorMessage   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  igAccount    IgAccount    @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([scheduledAt])
+}

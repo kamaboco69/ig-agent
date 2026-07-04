@@ -1,0 +1,35 @@
+runConfig:
+  runtime: nodejs22
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 1024 # 画像合成（satori/sharp）があるため x-step より多め
+  maxInstances: 4
+  minInstances: 0
+
+env:
+  - variable: NODE_ENV
+    value: production
+  - variable: DATABASE_URL
+    secret: DATABASE_URL
+  # ── 認証 / マルチテナントSaaS ──
+  - variable: AUTH_SECRET
+    secret: AUTH_SECRET
+  - variable: AUTH_URL
+    value: https://ig-agent--x-development-17edb.asia-east1.hosted.app
+  - variable: NEXT_PUBLIC_APP_URL
+    value: https://ig-agent--x-development-17edb.asia-east1.hosted.app
+  - variable: ENCRYPTION_KEY
+    secret: ENCRYPTION_KEY
+  # ── Instagram API with Instagram Login ──
+  - variable: IG_APP_ID
+    secret: IG_APP_ID
+  - variable: IG_APP_SECRET
+    secret: IG_APP_SECRET
+  # ── AI 生成 ──
+  - variable: ANTHROPIC_API_KEY
+    secret: ANTHROPIC_API_KEY
+  - variable: OPENAI_API_KEY
+    secret: OPENAI_API_KEY
+  # ── 定期実行（/api/cron）保護用。Cloud Scheduler から Bearer で渡す ──
+  - variable: CRON_SECRET
+    secret: CRON_SECRET
