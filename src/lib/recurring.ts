@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { generateStory } from "@/lib/story-generator";
+import { createStoryFromMedia, pickLibraryFile } from "@/lib/story-media";
 import { publishStoryRecord } from "@/lib/story-publisher";
 import type { RecurringStory } from "@/generated/prisma/client";
 
@@ -45,7 +46,26 @@ export async function runRecurring(
 
   try {
     let storyId: string;
-    if (r.mode === "fixed") {
+    if (r.mode === "library") {
+      // この配信専用のドライブフォルダ（未設定なら組織デフォルト）から素材をローテーション
+      const file = await pickLibraryFile(account, r.driveFolderId);
+      if (!file) {
+        return { ran: false, published: false, error: "素材フォルダにファイルがありません（またはドライブ未連携）" };
+      }
+      const story = await createStoryFromMedia(
+        account,
+        { kind: "library", fileId: file.id, mimeType: file.mimeType, fileName: file.name },
+        { overlay: true, instruction: r.instruction, source: "auto" }
+      );
+      await prisma.story.update({
+        where: { id: story.id },
+        data: {
+          status: "posting",
+          concept: `定期配信「${r.name}」${story.concept ? `: ${story.concept}` : ""}`,
+        },
+      });
+      storyId = story.id;
+    } else if (r.mode === "fixed") {
       if (!r.imageData) return { ran: false, published: false, error: "登録画像がありません" };
       const story = await prisma.story.create({
         data: {

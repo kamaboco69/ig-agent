@@ -49,6 +49,7 @@ export interface RecurringView {
   mode: string;
   instruction: string | null;
   hasImage: boolean;
+  driveFolderName: string | null;
   intervalDays: number;
   timeJst: string;
   enabled: boolean;
@@ -210,9 +211,10 @@ export function DashboardClient({
   const [recurring, setRecurring] = useState(initialRecurring);
   const [showRecurringForm, setShowRecurringForm] = useState(initialRecurring.length === 0);
   const [recName, setRecName] = useState("");
-  const [recMode, setRecMode] = useState<"ai" | "fixed">("ai");
+  const [recMode, setRecMode] = useState<"ai" | "library" | "fixed">("ai");
   const [recInstruction, setRecInstruction] = useState("");
   const [recImage, setRecImage] = useState<{ dataUrl: string; fileName: string } | null>(null);
+  const [recFolderUrl, setRecFolderUrl] = useState("");
   const [recInterval, setRecInterval] = useState(1);
   const [recTime, setRecTime] = useState("18:00");
   const [recSaving, setRecSaving] = useState(false);
@@ -495,6 +497,7 @@ export function DashboardClient({
           mode: recMode,
           instruction: recInstruction,
           dataUrl: recImage?.dataUrl,
+          folderUrl: recFolderUrl,
           intervalDays: recInterval,
           timeJst: recTime,
         }),
@@ -506,6 +509,7 @@ export function DashboardClient({
       setRecName("");
       setRecInstruction("");
       setRecImage(null);
+      setRecFolderUrl("");
       setShowRecurringForm(false);
       showToast("ok", "定期配信を登録しました");
     } catch (e) {
@@ -904,7 +908,9 @@ export function DashboardClient({
                   <div className="flex-1 min-w-0">
                     <p className="text-white text-sm font-semibold truncate">{r.name}</p>
                     <p className="text-gray-500 text-xs truncate">
-                      @{r.username}・{r.mode === "fixed" ? "固定画像" : "AI生成"}・{intervalLabel(r.intervalDays)} {r.timeJst}
+                      @{r.username}
+                      ・{r.mode === "fixed" ? "固定画像" : r.mode === "library" ? `ドライブ素材（${r.driveFolderName ?? "デフォルトフォルダ"}）` : "AI生成"}
+                      ・{intervalLabel(r.intervalDays)} {r.timeJst}
                       {r.enabled && (
                         <span className="ml-2 text-sky-400">
                           次回 {new Date(r.nextRunAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
@@ -948,8 +954,8 @@ export function DashboardClient({
                   />
                 </div>
               </div>
-              <div className="flex gap-2">
-                {(["ai", "fixed"] as const).map((m) => (
+              <div className="flex flex-wrap gap-2">
+                {(["ai", "library", "fixed"] as const).map((m) => (
                   <button
                     key={m}
                     onClick={() => setRecMode(m)}
@@ -957,11 +963,15 @@ export function DashboardClient({
                       recMode === m ? "border-pink-500 bg-pink-500/10 text-white" : "border-neutral-700 text-gray-400 hover:text-white"
                     }`}
                   >
-                    {m === "ai" ? "AIで毎回生成（コピー日替わり）" : "登録画像をそのまま投稿"}
+                    {m === "ai"
+                      ? "AIで毎回生成（コピー日替わり）"
+                      : m === "library"
+                      ? "ドライブフォルダの素材から"
+                      : "登録画像をそのまま投稿"}
                   </button>
                 ))}
               </div>
-              {recMode === "ai" ? (
+              {recMode === "ai" && (
                 <textarea
                   value={recInstruction}
                   onChange={(e) => setRecInstruction(e.target.value)}
@@ -969,7 +979,29 @@ export function DashboardClient({
                   placeholder="生成指示（例: 本日18時オープンの告知。今日のおすすめを一言添えて来店を促す）"
                   className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none resize-none"
                 />
-              ) : (
+              )}
+              {recMode === "library" && (
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={recFolderUrl}
+                    onChange={(e) => setRecFolderUrl(e.target.value)}
+                    placeholder={`この配信専用のドライブフォルダURL（未入力なら${drive.folderName ? `デフォルトの「${drive.folderName}」` : "デフォルトの素材フォルダ"}を使用）`}
+                    className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
+                  />
+                  <textarea
+                    value={recInstruction}
+                    onChange={(e) => setRecInstruction(e.target.value)}
+                    rows={2}
+                    placeholder="コピーの指示（任意）例: 本日9時オープン！の告知。写真は毎回フォルダからローテーションされます"
+                    className="w-full bg-black border border-neutral-700 focus:border-pink-500 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none resize-none"
+                  />
+                  <p className="text-gray-600 text-[11px]">
+                    フォルダ内の画像・動画を直近と重複しないよう自動で選びます。画像はAIコピー入り、動画はそのまま投稿されます
+                  </p>
+                </div>
+              )}
+              {recMode === "fixed" && (
                 <label className="block border border-dashed border-neutral-700 hover:border-pink-500 rounded-xl p-4 text-center cursor-pointer transition-colors">
                   <input type="file" accept="image/*" className="hidden" onChange={onRecFileSelected} />
                   {recImage ? (

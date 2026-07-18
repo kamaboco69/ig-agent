@@ -181,15 +181,21 @@ async function driveThumbnail(token: string, fileId: string): Promise<string> {
   return `data:image/jpeg;base64,${(await fallbackPoster()).toString("base64")}`;
 }
 
-// オートパイロット（library/mix）用: フォルダから未使用ファイルを1つ選んで返す。
-// 直近のストーリーズで使った sourceRef を避け、それでも尽きたら全体からランダム。
-export async function pickLibraryFile(account: IgAccount): Promise<DriveFile | null> {
+// オートパイロット・定期配信用: フォルダから未使用ファイルを1つ選んで返す。
+// folderId 指定があればそのフォルダ、なければ組織のデフォルト素材フォルダ。
+// 直近のストーリーズで使った sourceRef を避け、それでも尽きたら全体からランダム（ローテーション）。
+export async function pickLibraryFile(
+  account: IgAccount,
+  folderIdOverride?: string | null
+): Promise<DriveFile | null> {
   const integration = await driveIntegrationForOrg(account.organizationId);
-  if (!integration?.folderId) return null;
+  if (!integration) return null;
+  const folderId = folderIdOverride ?? integration.folderId;
+  if (!folderId) return null;
   const token = await getDriveToken(integration);
   if (!token) return null;
 
-  const files = await listMediaFiles(token, integration.folderId);
+  const files = await listMediaFiles(token, folderId);
   if (files.length === 0) return null;
 
   const recent = await prisma.story.findMany({

@@ -187,9 +187,11 @@ model RecurringStory {
   organizationId String
   igAccountId    String
   name           String // 管理用の名前（例: 開店告知）
-  mode           String    @default("ai") // ai（指示から毎回生成・コピー日替わり）/ fixed（登録画像をそのまま投稿）
-  instruction    String? // aiモード: 生成指示（例: 本日18時オープンの告知。来店を促す一言を添える）
+  mode           String    @default("ai") // ai（指示から毎回生成）/ fixed（登録画像をそのまま）/ library（ドライブフォルダの素材をローテーション）
+  instruction    String? // ai/libraryモード: コピーの生成指示（例: 本日18時オープンの告知。来店を促す一言を添える）
   imageData      String? // fixedモード: 登録画像（1080x1920 JPEG data URL）
+  driveFolderId  String? // libraryモード: この配信専用の素材フォルダ（未設定なら組織のデフォルトフォルダ）
+  driveFolderName String?
   intervalDays   Int       @default(1) // 1=毎日 / 2=2日に1回 / 7=毎週 …
   timeJst        String // 投稿時刻（JST "HH:mm"）
   enabled        Boolean   @default(true)

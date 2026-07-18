@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { getOrgContext, unauthorizedResponse } from "@/lib/auth-helpers";
 import { nextOccurrenceJst } from "@/lib/recurring";
 import { resizePlain } from "@/lib/story-media";
+import { driveIntegrationForOrg, extractFolderId, getDriveToken, getFolder } from "@/lib/gdrive";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -11,7 +12,8 @@ const ALLOWED_INTERVALS = [1, 2, 3, 7, 14];
 
 function view(r: {
   id: string; igAccountId: string; name: string; mode: string; instruction: string | null;
-  imageData: string | null; intervalDays: number; timeJst: string; enabled: boolean;
+  imageData: string | null; driveFolderId: string | null; driveFolderName: string | null;
+  intervalDays: number; timeJst: string; enabled: boolean;
   nextRunAt: Date; lastRunAt: Date | null;
 }) {
   return {
@@ -21,6 +23,7 @@ function view(r: {
     mode: r.mode,
     instruction: r.instruction,
     hasImage: !!r.imageData,
+    driveFolderName: r.driveFolderName,
     intervalDays: r.intervalDays,
     timeJst: r.timeJst,
     enabled: r.enabled,
@@ -40,7 +43,7 @@ export async function GET() {
 }
 
 // 定期配信の登録。
-// body: { igAccountId, name, mode: "ai"|"fixed", instruction?, dataUrl?, intervalDays, timeJst }
+// body: { igAccountId, name, mode: "ai"|"fixed"|"library", instruction?, dataUrl?, folderUrl?, intervalDays, timeJst }
 export async function POST(req: NextRequest) {
   const ctx = await getOrgContext();
   if (!ctx) return unauthorizedResponse();
@@ -51,6 +54,7 @@ export async function POST(req: NextRequest) {
     mode?: string;
     instruction?: string;
     dataUrl?: string;
+    folderUrl?: string;
     intervalDays?: number;
     timeJst?: string;
   };
@@ -66,7 +70,7 @@ export async function POST(req: NextRequest) {
   const name = (body.name ?? "").trim();
   if (!name) return Response.json({ error: "名前を入力してください" }, { status: 400 });
 
-  const mode = body.mode === "fixed" ? "fixed" : "ai";
+  const mode = body.mode === "fixed" ? "fixed" : body.mode === "library" ? "library" : "ai";
   const instruction = (body.instruction ?? "").trim();
   if (mode === "ai" && !instruction) {
     return Response.json({ error: "生成指示を入力してください（例: 本日18時オープンの告知）" }, { status: 400 });
@@ -82,6 +86,34 @@ export async function POST(req: NextRequest) {
     if (buf.length > 15 * 1024 * 1024) return Response.json({ error: "画像は15MB以下にしてください" }, { status: 400 });
     const jpeg = await resizePlain(buf);
     imageData = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+  }
+
+  // libraryモード: この配信専用フォルダ（任意）を検証。未指定なら組織デフォルトフォルダを使う
+  let driveFolderId: string | null = null;
+  let driveFolderName: string | null = null;
+  if (mode === "library") {
+    const integration = await driveIntegrationForOrg(ctx.organizationId);
+    if (!integration) {
+      return Response.json({ error: "先に「写真・動画から作成」タブでGoogleドライブを連携してください" }, { status: 400 });
+    }
+    const folderInput = (body.folderUrl ?? "").trim();
+    if (folderInput) {
+      const folderId = extractFolderId(folderInput);
+      if (!folderId) return Response.json({ error: "フォルダのURLまたはIDが不正です" }, { status: 400 });
+      const token = await getDriveToken(integration);
+      if (!token) return Response.json({ error: "Googleドライブの再連携が必要です" }, { status: 400 });
+      const folder = await getFolder(token, folderId);
+      if (!folder) {
+        return Response.json({ error: "フォルダが見つかりません（連携したGoogleアカウントで閲覧できるか確認してください）" }, { status: 400 });
+      }
+      driveFolderId = folder.id;
+      driveFolderName = folder.name;
+    } else if (!integration.folderId) {
+      return Response.json(
+        { error: "フォルダURLを指定するか、先にデフォルトの素材フォルダを設定してください" },
+        { status: 400 }
+      );
+    }
   }
 
   const intervalDays = ALLOWED_INTERVALS.includes(Number(body.intervalDays)) ? Number(body.intervalDays) : 1;
@@ -101,6 +133,8 @@ export async function POST(req: NextRequest) {
       mode,
       instruction: instruction || null,
       imageData,
+      driveFolderId,
+      driveFolderName,
       intervalDays,
       timeJst: (body.timeJst ?? "").trim(),
       nextRunAt,
