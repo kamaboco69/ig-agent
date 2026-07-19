@@ -11,11 +11,14 @@ export function StoryPanel({
   onClose,
   onMutated,
   onToast,
+  vertical = false,
 }: {
   story: StoryView;
   onClose: () => void;
   onMutated: (next: StoryView | null) => void;
   onToast: (kind: "ok" | "error", text: string) => void;
+  /** 右カラム表示用の縦積みレイアウト */
+  vertical?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [scheduleAt, setScheduleAt] = useState("");
@@ -99,8 +102,8 @@ export function StoryPanel({
           <X size={18} />
         </button>
       </div>
-      <div className="flex flex-col md:flex-row gap-5">
-        <div className="relative w-full max-w-[240px] mx-auto md:mx-0 flex-none">
+      <div className={vertical ? "flex flex-col gap-4" : "flex flex-col md:flex-row gap-5"}>
+        <div className={vertical ? "relative w-full max-w-[280px] mx-auto" : "relative w-full max-w-[240px] mx-auto md:mx-0 flex-none"}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={story.imageUrl}

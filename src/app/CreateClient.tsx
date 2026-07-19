@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/components/useToast";
 import { StoryPanel } from "@/components/StoryPanel";
+import { PhonePreview } from "@/components/PhonePreview";
 import {
   ERROR_MESSAGES,
   STYLE_OPTIONS,
@@ -277,8 +278,20 @@ export function CreateClient({
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   };
 
+  // 右カラムのライブプレビュー（選択中の素材 or 作成結果）
+  const livePreviewSrc =
+    createMode === "media"
+      ? mediaTab === "upload"
+        ? upload?.dataUrl ?? null
+        : mediaTab === "drive"
+          ? selectedDrive?.thumbnailLink ?? null
+          : selectedIg
+            ? (selectedIg.mediaType === "VIDEO" ? selectedIg.thumbnailUrl ?? selectedIg.mediaUrl : selectedIg.mediaUrl) ?? null
+            : null
+      : null;
+
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
+    <div className="max-w-6xl mx-auto px-4 py-6">
       {toastEl}
       <h1 className="text-white font-bold text-lg mb-6">ストーリーズを作成</h1>
 
@@ -301,6 +314,7 @@ export function CreateClient({
         </div>
       )}
 
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-6 lg:items-start">
       <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
         <div className="flex flex-wrap gap-2">
           <button
@@ -553,17 +567,32 @@ export function CreateClient({
         )}
       </div>
 
-      {created && (
-        <div className="mt-6">
+      {/* 右カラム: プレビュー（作成後は投稿・予約の操作つき） */}
+      <aside className="mt-6 lg:mt-0 lg:sticky lg:top-6">
+        {created ? (
           <StoryPanel
             key={created.id}
+            vertical
             story={created}
             onClose={() => setCreated(null)}
             onMutated={(next) => setCreated(next)}
             onToast={showToast}
           />
-        </div>
-      )}
+        ) : (
+          <PhonePreview
+            imageSrc={livePreviewSrc}
+            username={username()}
+            videoBadge={!!selectedIsVideo}
+            placeholderTitle={createMode === "ai" ? "AIおまかせ" : "素材を選択してください"}
+            placeholderText={
+              createMode === "ai"
+                ? "「AIでストーリーズを作成」を押すと、コピーと背景を自動生成してここに表示されます"
+                : "アップロード・ドライブ・過去投稿から素材を選ぶと、ここにプレビューが表示されます"
+            }
+          />
+        )}
+      </aside>
+      </div>
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Check, FolderOpen, Loader2, Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/components/useToast";
+import { PhonePreview } from "@/components/PhonePreview";
 import { INTERVAL_OPTIONS, intervalLabel, type RecurringView } from "../view-types";
 
 const MODE_OPTIONS = [
@@ -105,14 +106,28 @@ export function RecurringClient({
   const modeLabel = (r: RecurringView) =>
     r.mode === "fixed" ? "固定画像" : r.mode === "library" ? `素材: ${r.driveFolderName ?? "デフォルトフォルダ"}` : "AI生成";
 
+  const previewUsername = accounts.find((a) => a.id === accountId)?.username ?? "";
+  const previewPlaceholder =
+    mode === "ai"
+      ? {
+          title: name.trim() || "AIで毎回生成",
+          text: `${instruction.trim() || "登録した指示をもとに"}\n\nコピーと背景をAIが毎回作り直すので、同じ告知でも日替わりの見た目になります`,
+        }
+      : {
+          title: name.trim() || "ドライブフォルダの素材から",
+          text: `${folderUrl.trim() ? "指定フォルダ" : "デフォルトの素材フォルダ"}の写真・動画をローテーションで使用。\n写真にはAIがコピーを載せます${instruction.trim() ? `\n\n指示: ${instruction.trim()}` : ""}`,
+        };
+
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
+    <div className="max-w-6xl mx-auto px-4 py-6">
       {toastEl}
       <h1 className="text-white font-bold text-lg mb-2">定期配信</h1>
       <p className="text-gray-500 text-xs mb-6">
         「本日18時オープン」のような繰り返し投稿を登録すると、設定した間隔・時刻で自動投稿します。
       </p>
 
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-6 lg:items-start">
+      <div>
       <div className="space-y-2 mb-5">
         {items.map((r) => (
           <div key={r.id} className="flex items-center gap-3 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3">
@@ -269,6 +284,34 @@ export function RecurringClient({
           <Plus size={14} /> 定期配信を追加
         </button>
       )}
+      </div>
+
+      {/* 右カラム: プレビュー */}
+      <aside className="mt-6 lg:mt-0 lg:sticky lg:top-6">
+        {showForm ? (
+          <PhonePreview
+            imageSrc={mode === "fixed" ? image?.dataUrl ?? null : null}
+            username={previewUsername}
+            placeholderTitle={mode === "fixed" ? "画像を選択してください" : previewPlaceholder.title}
+            placeholderText={
+              mode === "fixed"
+                ? "選択した画像が毎回そのまま投稿されます"
+                : previewPlaceholder.text
+            }
+          />
+        ) : (
+          <PhonePreview
+            username={previewUsername}
+            placeholderTitle="定期配信"
+            placeholderText={
+              items.length > 0
+                ? `${items.filter((r) => r.enabled).length}件が稼働中。\n設定した間隔・時刻になると自動で生成→投稿されます`
+                : "「定期配信を追加」から登録すると、ここに投稿イメージが表示されます"
+            }
+          />
+        )}
+      </aside>
+      </div>
     </div>
   );
 }
