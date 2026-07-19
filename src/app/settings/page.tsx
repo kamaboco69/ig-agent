@@ -1,12 +1,12 @@
 import { prisma } from "@/lib/db";
 import { requireOrgPage } from "@/lib/auth-helpers";
 import { igConfigured } from "@/lib/ig-api";
-import { CreateClient } from "./CreateClient";
-import type { AccountView, DriveView } from "./view-types";
+import { SettingsClient } from "./SettingsClient";
+import type { AccountView, DriveView } from "../view-types";
 
 export const dynamic = "force-dynamic";
 
-export default async function CreatePage() {
+export default async function SettingsPage() {
   const { organizationId } = await requireOrgPage();
 
   const [accounts, driveIntegration] = await Promise.all([
@@ -48,7 +48,5 @@ export default async function CreatePage() {
     folderName: driveIntegration?.folderName ?? null,
   };
 
-  return (
-    <CreateClient configured={igConfigured()} accounts={accountViews} drive={driveView} />
-  );
+  return <SettingsClient configured={igConfigured()} accounts={accountViews} drive={driveView} />;
 }
